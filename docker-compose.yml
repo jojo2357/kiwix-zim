@@ -1,0 +1,21 @@
+services:
+  kiwix: # this container is technically optional
+    image: ghcr.io/kiwix/kiwix-serve:latest
+    command: '*.zim'
+    ports:
+      - '8888:8080' #change 8888 to your preferred port
+    volumes:
+      - data:/data
+    restart: unless-stopped
+  kiwix-updater:
+    container_name: kiwix-updater
+    build: 
+      context: . 
+      no_cache: true
+    volumes:
+      - data:/data
+    restart: "no"
+
+volumes:
+  data: #update to the volume/directory holding your zim files
+    external: true
