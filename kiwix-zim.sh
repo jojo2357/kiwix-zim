@@ -1,6 +1,6 @@
 #!/bin/bash
 
-VER="3.3"
+VER="3.4"
 
 # This array will contain all of the local zims, with the file extension
 LocalZIMArray=()
@@ -42,6 +42,11 @@ FORCE_FETCH_INDEX=0
 DOWNLOAD_METHOD=1 # 1: web 2: torrent
 BaseURL="https://download.kiwix.org/zim/"
 ZIMPath=""
+WGET_CMD="wget"
+WGET_SHOW_PROGRESS="--show-progress --progress=bar:force"
+WGET_VER=1
+ARIA2C_MAX_CONN=1
+ARIA2C_SUMMARY_INTERVAL=10
 
 RED_REGULAR="\033[0;31m"
 RED_BOLD="\033[1;31m"
@@ -52,6 +57,15 @@ GREEN_BOLD="\033[1;32m"
 BLUE_REGULAR="\033[0;34m"
 BLUE_BOLD="\033[1;34m"
 CLEAR="\033[0m"
+
+# Ensure that external command exists
+check_command() {
+  if ! command -v "$1" &>/dev/null; then
+    echo "Command not found: '$1'" >&2
+    return 1
+  fi
+  return 0
+}
 
 # This will ask the api what files it has to offer and store them in arrays
 master_scrape() {
@@ -73,7 +87,7 @@ master_scrape() {
 
   if [[ FORCE_FETCH_INDEX -eq 1 ]] || [[ $indexIsValid -eq 0 ]]; then
     # both write the file timestamp to the index file and save all of the links to RawLibrary
-    RawLibrary="$(wget --show-progress -q -O - "https://library.kiwix.org/catalog/v2/entries?count=-1" | tee --output-error=warn-nopipe >(grep -ioP "(?<=<updated>)\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?=Z</updated>)" | head -1 > kiwix-index) | grep -i 'application/x-zim' | grep -ioP "^\s+\K.*$")"
+    RawLibrary="$($WGET_CMD ${WGET_SHOW_PROGRESS//--progress=bar*/} -q -O - "https://library.kiwix.org/catalog/v2/entries?count=-1" | tee --output-error=warn-nopipe >(grep -ioP "(?<=<updated>)\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?=Z</updated>)" | head -1 > kiwix-index) | grep -i 'application/x-zim' | grep -ioP "^\s+\K.*$")"
 
     echo "$RawLibrary" >> kiwix-index
   else
@@ -106,6 +120,15 @@ master_scrape() {
   # Housekeeping...
   unset RawLibrary
   unset hrefs
+}
+
+# run_downloader - Run the appropriate downloader
+run_downloader() {
+  if [[ -n "$ARIA2C_CMD" ]]; then
+    [[ $DEBUG -eq 0 ]] && $ARIA2C_CMD --summary-interval=$ARIA2C_SUMMARY_INTERVAL -x $ARIA2C_MAX_CONN -c -d "${FilePath%/*}" -o "${FilePath##*/}" "$DownloadURL" 2>&1 |& tee -a download.log # Download new ZIM 
+  else
+    [[ $DEBUG -eq 0 ]] && $WGET_CMD -q $WGET_SHOW_PROGRESS -c -O "$FilePath" "$DownloadURL" 2>&1 |& tee -a download.log # Download new ZIM
+  fi
 }
 
 # self_update - Script Self-Update Function
@@ -158,7 +181,7 @@ self_update() {
 
 # usage_example - Show Usage and Exit
 usage_example() {
-  echo 'Usage: ./kiwix-zim-updater.sh <options> /full/path/'
+  echo "Usage: ./${CALLEDSCRIPTNAME##*/} <options> /full/path/"
   echo ''
   echo '    /full/path/                Full path to ZIM directory'
   echo ''
@@ -181,6 +204,9 @@ usage_example() {
   echo '                               Disable this using -S'
   echo ''
   echo 'Web Download Options:'
+  echo '    -2, --wget2                Force use of `wget2`, this is only required if your distribution packages wget2 as `wget2` and not `wget`.'
+  echo '    -3, --aria2c <max conns>   Enable use of `aria2c`, aria2c is only used for parallel downloads, wget is still required for everything else like metadata, etc.'
+  echo '                               Optionally specify max parallel download connections (defaults to 1, limited to 16).'
   echo '    -c, --calculate-checksum   Verifies that the downloaded files were not corrupted, but can take a while for large downloads.'
   echo '    -p, --skip-purge           Skips purging any replaced ZIMs.'
   echo '    -l <location>, --location  Country Code to prefer mirrors from'
@@ -311,9 +337,12 @@ mirror_search() {
   RemotePath="${RemotePaths[${LocalZIMRemoteIndexArray[$z]}]}"
   ExpectedSize="${FileSizes[${LocalZIMRemoteIndexArray[$z]}]}"
 
+  # wget2 option required to disable automatic .meta4 handling
+  [[ $WGET_VER -eq 2 ]] && WGET_INFO_OPTIONS="--no-metalink"
+
   # If we need the checksum, we need a link  and the hash, which we can get both by using .meta4, otherwise we only need
   # Silently fetch (via wget) the associated meta4 xml and extract the mirror URL marked priority="1"
-  MetaInfo=$(wget -q -O - "$BaseURL$RemotePath.meta4?country=$COUNTRY_CODE")
+  MetaInfo=$($WGET_CMD -q -O - $WGET_INFO_OPTIONS "$BaseURL$RemotePath.meta4?country=$COUNTRY_CODE")
   ExpectedSize=$(echo "$MetaInfo" | grep '<size>' | grep -Po '\d+')
   ExpectedHash=$(echo "$MetaInfo" | grep '<hash type="sha-256">' | grep -Poi '(?<="sha-256">)[a-f\d]{64}(?=<)')
 
@@ -371,7 +400,7 @@ while [[ $# -gt 0 ]]; do
         COUNTRY_CODE=$1 # convert passed arg to bytes
       else
         COUNTRY_CODE=""
-        echo "Invlaid country code, falling back to default kiwix behavior" >> download.log
+        echo "Invalid country code, falling back to default kiwix behavior" >> download.log
       fi
       shift # discard value
       ;;
@@ -404,6 +433,21 @@ while [[ $# -gt 0 ]]; do
       CHECKSUM_FILES=0
       shift
       ;;
+    -2 | --wget2)
+      WGET_CMD="wget2"
+      shift
+      ;;
+    -3 | --aria2c)
+      ARIA2C_CMD="aria2c"
+      shift
+      if [[ "$1" =~ ^[0-9]+$ ]]; then
+        # aria2c max parallel download connections
+        # -x, --max-connection-per-server=<NUM>
+        #       The maximum number of connections to one server for each download.  Default: 1
+        [[ $1 -ge 1 ]] && [[ $1 -le 16 ]] && ARIA2C_MAX_CONN=$1
+        shift
+      fi
+      ;;
     *)
       # We can either parse the arg here, or just tuck it away for safekeeping
       POSITIONAL_ARGS+=("$1") # save positional arg
@@ -411,6 +455,34 @@ while [[ $# -gt 0 ]]; do
       ;;
   esac
 done
+
+# Test for downloader tools
+if [[ "$WGET_CMD" == "wget" ]] && ! check_command "$WGET_CMD"; then
+  # Default to wget, fallback to wget2
+  echo "Using wget2 downloader" >> download.log
+  WGET_CMD="wget2"
+fi
+
+# Support 1.99 alpha+
+if $WGET_CMD -V | head -1 | grep -i "${WGET_CMD}\s\+\(2\|1\.99\)" &>/dev/null; then
+  WGET_VER=2
+  # Enable compatible options for wget2
+  # explicitly omit --progress=bar:force to 
+  # extend compatibility to alpha and beta
+  WGET_SHOW_PROGRESS="--force-progress --progress=bar"
+fi
+
+if ! check_command "$WGET_CMD"; then
+  echo "Fatal error, downloader not found!" >&2
+  exit 1
+fi
+
+if [[ -n "$ARIA2C_CMD" ]]; then
+  if ! check_command "$ARIA2C_CMD"; then
+    echo "Fatal error, downloader not found!" >&2
+    exit 1
+  fi
+fi
 
 set -- "${POSITIONAL_ARGS[@]}" # restore positional parameters that we skipped earlier
 
@@ -526,7 +598,7 @@ for ((i = 0; i < ${#LocalZIMNameArray[@]}; i++)); do
         echo -e "${GREEN_REGULAR}    Cached Checksum Found${CLEAR}"
       else
         echo "    Checking for online checksum..."
-        if wget -S --spider -q -O - "$BaseURL$MatchingCategory/$FileName.sha256" >/dev/null 2>&1; then
+        if $WGET_CMD -S --spider -q -O - "$BaseURL$MatchingCategory/$FileName.sha256" >/dev/null 2>&1; then
           LocalRequiresDownloadArray+=(1)
           AnyDownloads=1
           echo -e "${GREEN_BOLD}    ✓ Online Version Found${CLEAR}"
@@ -710,12 +782,12 @@ if [ $AnyDownloads -eq 1 ]; then
       if [[ $DOWNLOAD_METHOD -eq 2 ]]; then
         FilePath="$FilePath.torrent"
         if [[ -f "$LockFilePath" ]]; then
-          [[ $DEBUG -eq 0 ]] && wget -q --show-progress --progress=bar:force -c -O "$FilePath" "$DownloadURL" 2>&1 |& tee -a download.log # Download new ZIM
+          run_downloader
           [[ $DEBUG -eq 1 ]] && echo "Continue Download : $FilePath" >>download.log
         elif [[ -f $FilePath ]]; then # New ZIM already found, we don't need to download it.
           [[ $DEBUG -eq 1 ]] && echo "Download : New Torrent already exists on disk. Skipping download." >>download.log
         else # New ZIM not found, so we'll go ahead and download it.
-          [[ $DEBUG -eq 0 ]] && wget -q --show-progress --progress=bar:force -c -O "$FilePath" "$DownloadURL" 2>&1 |& tee -a download.log # Download new ZIM
+          run_downloader
           [[ $DEBUG -eq 1 ]] && echo "Download : $FilePath" >>download.log
         fi
 
@@ -733,13 +805,13 @@ if [ $AnyDownloads -eq 1 ]; then
 
         # Before we actually download, let's just check to see that it isn't already in the folder.
         if [[ -f "$LockFilePath" ]]; then
-          [[ $DEBUG -eq 0 ]] && wget -q --show-progress --progress=bar:force -c -O "$FilePath" "$DownloadURL" 2>&1 |& tee -a download.log # Download new ZIM
+          run_downloader
           [[ $DEBUG -eq 1 ]] && echo "Continue Download : $FilePath" >>download.log
         elif [[ -f $FilePath ]]; then # New ZIM already found, we don't need to download it.
           [[ $DEBUG -eq 1 ]] && echo "Download : New ZIM already exists on disk. Skipping download." >>download.log
         else # New ZIM not found, so we'll go ahead and download it.
           [[ $DEBUG -eq 0 ]] && touch "$LockFilePath"
-          [[ $DEBUG -eq 0 ]] && wget -q --show-progress --progress=bar:force -c -O "$FilePath" "$DownloadURL" 2>&1 |& tee -a download.log # Download new ZIM
+          run_downloader
           [[ $DEBUG -eq 1 ]] && echo "Download : $FilePath" >>download.log
         fi
       fi
@@ -778,7 +850,7 @@ if [ $AnyDownloads -eq 1 ]; then
     echo >> download.log
     [[ $DownloadFailed -eq 1 ]] && echo " !!! DOWNLOAD FAILED !!!" >>download.log
 
-    # in all of these cases, we will not re-pruge and will leave the lockfile so we know to resume later
+    # in all of these cases, we will not re-purge and will leave the lockfile so we know to resume later
     if [[ $DownloadFailed -eq 1 ]] || [[ $SKIP_PURGE -eq 1 ]] || [[ $VERIFY_LIBRARY -eq 1 ]]; then
       [[ $DEBUG -eq 0 ]] && echo "End : $(date -u)" >>download.log
       [[ $DEBUG -eq 1 ]] && echo "End : $(date -u) *** Simulation ***" >>download.log
@@ -799,12 +871,12 @@ if [ $AnyDownloads -eq 1 ]; then
     if [[ -f "$NewZIMPath" ]]; then # New ZIM found
       if [[ $DEBUG -eq 0 ]]; then
         if [[ "$OldZIMPath" == "$NewZIMPath" ]]; then
-          echo -e "${GREEN_BOLD}    ✓ Status : New ZIM downloaded succesfully.${CLEAR}"
-          echo "✓ Status : New ZIM downloaded succesfully." >>download.log
+          echo -e "${GREEN_BOLD}    ✓ Status : New ZIM downloaded successfully.${CLEAR}"
+          echo "✓ Status : New ZIM downloaded successfully." >>download.log
           #                    rm "$OldZIMPath.sha256" 2>/dev/null # Purge old ZIM
         else
-          echo -e "${GREEN_BOLD}    ✓ Status : New ZIM downloaded succesfully. Old ZIM purged.${CLEAR}"
-          echo "✓ Status : New ZIM downloaded succesfully. Old ZIM purged." >>download.log
+          echo -e "${GREEN_BOLD}    ✓ Status : New ZIM downloaded successfully. Old ZIM purged.${CLEAR}"
+          echo "✓ Status : New ZIM downloaded successfully. Old ZIM purged." >>download.log
           [[ -f "$OldZIMPath" ]] && rm "$OldZIMPath" && rm "$OldZIMPath.sha256" 2>/dev/null # Purge old ZIM
         fi
       else
