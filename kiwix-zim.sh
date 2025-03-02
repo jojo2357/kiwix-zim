@@ -43,7 +43,7 @@ DOWNLOAD_METHOD=1 # 1: web 2: torrent
 BaseURL="https://download.kiwix.org/zim/"
 ZIMPath=""
 WGET_CMD="wget"
-WGET_SHOW_PROGRESS="--show-progress"
+WGET_SHOW_PROGRESS="--show-progress --progress=bar:force"
 WGET_VER=1
 ARIA2C_MAX_CONN=1
 ARIA2C_SUMMARY_INTERVAL=10
@@ -87,7 +87,7 @@ master_scrape() {
 
   if [[ FORCE_FETCH_INDEX -eq 1 ]] || [[ $indexIsValid -eq 0 ]]; then
     # both write the file timestamp to the index file and save all of the links to RawLibrary
-    RawLibrary="$($WGET_CMD $WGET_SHOW_PROGRESS -q -O - "https://library.kiwix.org/catalog/v2/entries?count=-1" | tee --output-error=warn-nopipe >(grep -ioP "(?<=<updated>)\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?=Z</updated>)" | head -1 > kiwix-index) | grep -i 'application/x-zim' | grep -ioP "^\s+\K.*$")"
+    RawLibrary="$($WGET_CMD ${WGET_SHOW_PROGRESS//--progress=bar:force/} -q -O - "https://library.kiwix.org/catalog/v2/entries?count=-1" | tee --output-error=warn-nopipe >(grep -ioP "(?<=<updated>)\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?=Z</updated>)" | head -1 > kiwix-index) | grep -i 'application/x-zim' | grep -ioP "^\s+\K.*$")"
 
     echo "$RawLibrary" >> kiwix-index
   else
@@ -127,7 +127,7 @@ run_downloader() {
   if [[ -n "$ARIA2C_CMD" ]]; then
     [[ $DEBUG -eq 0 ]] && $ARIA2C_CMD --summary-interval=$ARIA2C_SUMMARY_INTERVAL -x $ARIA2C_MAX_CONN -c -d "${FilePath%/*}" -o "${FilePath##*/}" "$DownloadURL" 2>&1 |& tee -a download.log # Download new ZIM 
   else
-    [[ $DEBUG -eq 0 ]] && $WGET_CMD -q $WGET_SHOW_PROGRESS --progress=bar:force -c -O "$FilePath" "$DownloadURL" 2>&1 |& tee -a download.log # Download new ZIM
+    [[ $DEBUG -eq 0 ]] && $WGET_CMD -q $WGET_SHOW_PROGRESS -c -O "$FilePath" "$DownloadURL" 2>&1 |& tee -a download.log # Download new ZIM
   fi
 }
 
@@ -463,9 +463,12 @@ if [[ "$WGET_CMD" == "wget" ]] && ! check_command "$WGET_CMD"; then
   WGET_CMD="wget2"
 fi
 
-if $WGET_CMD -V | head -1 | grep -i "${WGET_CMD}\s\+2" &>/dev/null; then
+# Support 1.99 alpha+
+if $WGET_CMD -V | head -1 | grep -i "${WGET_CMD}\s\+\(2\|1\.99\)" &>/dev/null; then
   WGET_VER=2
-  # Force progress for wget2
+  # Enable compatible options for wget2
+  # explicitly omit --progress=bar:force to 
+  # extend compatibility to alpha and beta
   WGET_SHOW_PROGRESS="--force-progress"
 fi
 
