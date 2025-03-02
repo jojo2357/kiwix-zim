@@ -463,7 +463,8 @@ if [[ "$WGET_CMD" == "wget" ]] && ! check_command "$WGET_CMD"; then
   WGET_CMD="wget2"
 fi
 
-if $WGET_CMD -V | head -1 | grep -i "${WGET_CMD}\s\+2" &>/dev/null; then
+# Support 1.99 alpha+
+if $WGET_CMD -V | head -1 | grep -i "${WGET_CMD}\s\+\(2\|1\.99\)" &>/dev/null; then
   WGET_VER=2
   # Force progress for wget2
   WGET_SHOW_PROGRESS="--force-progress"
