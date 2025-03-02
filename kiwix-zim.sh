@@ -469,7 +469,7 @@ if $WGET_CMD -V | head -1 | grep -i "${WGET_CMD}\s\+\(2\|1\.99\)" &>/dev/null; t
   # Enable compatible options for wget2
   # explicitly omit --progress=bar:force to 
   # extend compatibility to alpha and beta
-  WGET_SHOW_PROGRESS="--force-progress"
+  WGET_SHOW_PROGRESS="--force-progress --progress=bar"
 fi
 
 if ! check_command "$WGET_CMD"; then
